@@ -16,7 +16,9 @@ z_{n+1} = z_n^2 + C
 $$
 
 My explorer shows the escape time vs the parameter $\lambda$ in the
-complex plane.  Some screenshots are below.
+complex plane.  I take the sqrt() of the escape times prior to
+plotting and also fiddle with the color mapping in order to get pretty
+images.  Some screenshots are below. 
 
 <p float="left">
 <img src="Mandelbrot1.png" height="300" width="300"/>
@@ -43,7 +45,7 @@ particular area in the complex plane:
 -h Starting height to display    
 
 --------------------------------------------------------------
-To build the program from scratch:
+To build the program from scratch:    
 mkdir build    
 cd build    
 cmake ..    
