@@ -18,10 +18,14 @@ $$
 My explorer shows the escape time vs the parameter $\lambda$ in the
 complex plane.  Some screenshots are below.
 
+<p float="left">
 <img src="Mandelbrot1.png" height="200" width="200"/>
 <img src="Mandelbrot2.png" height="200" width="200"/>
+</p>
+<p float="left">
 <img src="Mandelbrot3.png" height="200" width="200"/>
 <img src="Mandelbrot4.png" height="200" width="200"/>
+</p>
 
 --------------------------------------------------------------
 To run the explorer, just type "Mandelbrot" at the command line.  The
