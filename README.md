@@ -4,13 +4,17 @@ graphics and mouse interactions.  The code is targeted to run on my
 Nvidia Tesla K80 GPGPU as the compute engine.
 
 This Mandelbrot explorer iterates the logistic map,
+
 $$
 x_{n+1} = \lambda x_n (1 - x_n)
 $$
+
 instead of the usual Mandelbrot map
+
 $$
 z_{n+1} = z_n^2 + C
 $$
+
 My explorer shows the escape time vs the parameter $\lambda$ in the
 complex plane.  Some screenshots are below.
 
