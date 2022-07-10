@@ -225,7 +225,6 @@ MY_CREATE(customMouseInteractorStyle, iStyle);
 //===========================================================
 // Manipulate the view of the complex plane.
 void moveZoom(int i, int j, double zoom) {
-  // Convert first pixel point to real number 
   double xyz[3];
   int iz = 0;
   double x0, y0;
@@ -261,9 +260,6 @@ void moveZoom(int i, int j, double zoom) {
   Z.dx = Z.w/(NX-1);
   Z.dy = Z.h/(NY-1);
   
-  // Now compute Mandelbrot set using new origin and spacing.
-  computeMandelbrot(rImageData);  // Compute the whole set.
-
   // Now that I have an updated Z, must update ImageData
   rImageData->SetSpacing(Z.dx, Z.dy, 1.0);
   rImageData->SetOrigin(Z.xmin, Z.ymin, 0.0);  // This sets lower left corner.
@@ -277,6 +273,9 @@ void moveZoom(int i, int j, double zoom) {
   myw = NX*xyz[0];
   myh = NY*xyz[1];
   printf("New xmin = %f, ymin = %f, w = %e, h = %e\n", myxmin, myymin, myw, myh);
+
+    // Now compute Mandelbrot set using new origin and spacing.
+  computeMandelbrot(rImageData);  // Compute the whole set.
 
   /*
   std::cout << "moveZoom, after update, rImageData = " << std::endl;

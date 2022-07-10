@@ -31,6 +31,8 @@ images.  Some screenshots are below.
 
 --------------------------------------------------------------
 To run the explorer, just type "Mandelbrot" at the command line.  The
+middle mouse button pans the image and the mouse wheel will zoom in
+and out.  The other mouse buttons are disabled.  The
 following command line args are optional:
 
 -N Number of iterations to use.  Default is 8, but higher numbers (in
@@ -46,11 +48,14 @@ particular area in the complex plane:
 
 --------------------------------------------------------------
 To build the program from scratch:    
+
 mkdir build    
 cd build    
 cmake ..    
 make    
 ./Mandelbrot    
+
+Ignore any warnings about thrust you get.
 
 Stuart Brorson, July 2022.
 
