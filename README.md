@@ -19,12 +19,12 @@ My explorer shows the escape time vs the parameter $\lambda$ in the
 complex plane.  Some screenshots are below.
 
 <p float="left">
-<img src="Mandelbrot1.png" height="200" width="200"/>
-<img src="Mandelbrot2.png" height="200" width="200"/>
+<img src="Mandelbrot1.png" height="300" width="300"/>
+<img src="Mandelbrot2.png" height="300" width="300"/>
 </p>
 <p float="left">
-<img src="Mandelbrot3.png" height="200" width="200"/>
-<img src="Mandelbrot4.png" height="200" width="200"/>
+<img src="Mandelbrot3.png" height="300" width="300"/>
+<img src="Mandelbrot4.png" height="300" width="300"/>
 </p>
 
 --------------------------------------------------------------
