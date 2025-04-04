@@ -13,6 +13,7 @@
 #include <vtkScalarBarActor.h>
 #include <vtkTextProperty.h>
 #include <vtkVector.h>
+#include <vtkCamera.h>
 
 #include <complex>
 #include <vector>
@@ -58,8 +59,9 @@
 typedef struct {
   int N;          // Number of logistic map iterations (settable).
   double w, h;    // Width, height of image in real numbers.
-  double xmin, xmax, ymin, ymax;
-  double dx, dy;
+  double xmin, xmax, ymin, ymax;  // bounds of plane
+  double dx, dy;  // Step sizes in plane
+  double xc, yc;  // Center point of plane.
   double *z;      // This is place to attach computed values of plane.
                   // I malloc the storage later, in main().
 } ComplexPlane;
@@ -75,6 +77,7 @@ void f(double *z, double *lamr, double *lami, int N);
 // Declare host-side graphics manipulation fcns.
 void moveZoom(int i, int j, double zoom);
 void moveTranslate(vtkVector<int, 4> p);
+void MapIndexToPhysicalPoint(int i, int j, int k, double xyz[3]);
 void insertZIntoImageData(vtkUniformGrid *imageData, double *z);
 
 
@@ -102,6 +105,7 @@ MY_CREATE(vtkUniformGrid, rImageData);
 MY_CREATE(vtkImageMapToColors, colorComplexPlane);
 MY_CREATE(vtkImageActor, imageActor);
 MY_CREATE(vtkRenderer, renderer);
+MY_CREATE(vtkCamera, camera);
 MY_CREATE(vtkRenderWindow, renWin);
 MY_CREATE(vtkRenderWindowInteractor, iren);
 
@@ -129,6 +133,7 @@ public:
     moveZoom(i, j, scale);
     // Tell pipeline to update
     renderer->ResetCamera();
+    renderer->GetActiveCamera( )->SetViewUp( 0,1,0 );
     renWin->Render();
   }
 
@@ -179,22 +184,18 @@ public:
   
   void OnLeftButtonDown() override {
     std::cout << "Left button down ..." << std::endl;
-    //vtkInteractorStyleImage::OnLeftButtonDown();
   }
 
   void OnLeftButtonUp() override {
     std::cout << "Left button up ..." << std::endl;
-    //vtkInteractorStyleImage::OnLeftButtonUp();    
   } 
 
   void OnRightButtonDown() override {
     std::cout << "Right button down ..." << std::endl;
-    //vtkInteractorStyleImage::OnRightButtonDown();
   }
 
   void OnRightButtonUp() override {
     std::cout << "Right button up ..." << std::endl;
-    //vtkInteractorStyleImage::OnRightButtonUp();    
   } 
 
   void OnKeyDown() override {
@@ -228,64 +229,47 @@ void moveZoom(int i, int j, double zoom) {
   double xyz[3];
   int iz = 0;
   double x0, y0;
-  double myxmin, myymin, myh, myw;  // Locals used for checking only.
-
-  /*
-  std::cout << "moveZoom, before update, rImageData = " << std::endl;
-  rImageData->PrintSelf(std::cout,vtkIndent(2));
-  std::cout << "moveZoom, before update, imageActor = " << std::endl;
-  imageActor->PrintSelf(std::cout,vtkIndent(2));
-  std::cout << "moveZoom, before update, renWin = " << std::endl;
-  renWin->PrintSelf(std::cout,vtkIndent(2));
-  std::cout << "----------------------------------------------" << std::endl;
-  */
+  double tx, ty;
   
-  printf("Old xmin = %f, ymin = %f, w = %e, h = %e\n", Z.xmin, Z.ymin, Z.w, Z.h);
+  printf("Old xmin = %e, ymin = %e, xmax = %e, ymax = %e, w = %e, h = %e\n",
+	 Z.xmin, Z.ymin, Z.xmax, Z.ymax, Z.w, Z.h);
+  //printf("Old dx = %e, dy = %e\n", Z.dx, Z.dy);
+  printf("Old xc = %e, yc = %e\n", Z.xc, Z.yc);  
+  
 
   // Grab x,y coords of mouse point.
-  rImageData->TransformIndexToPhysicalPoint (i, j, iz, xyz);
-  x0 = xyz[0];  // New center of image
-  y0 = xyz[1];  // New center of image
-  printf("Mouse zoom event at [x0,y0] = [%f, %f]\n", x0, y0);
+  MapIndexToPhysicalPoint (i, j, iz, xyz);  
+  // The actual view image occupies the window from [0.16, 0.84].
+  // I need to scale the zoom point using the approx 1.3 scaling.
+  x0 = 1.3*(xyz[0]-0.5);  // New center of image in [0, 1] coords
+  y0 = 1.3*(xyz[1]-0.5);  // New center of image in [0, 1] coords
+  printf("Mouse zoom event at [x0,y0] = [%e, %e]\n", x0, y0);
 
-  // Update w and h
-  Z.w = Z.w*zoom;
-  Z.h = Z.h*zoom;
-
-  // Convert these values to new min, max, and spacing
-  Z.xmin = x0 - Z.w/2.0;
-  Z.xmax = x0 + Z.w/2.0;  
-  Z.ymin = y0 - Z.h/2.0;
-  Z.ymax = y0 + Z.h/2.0;  
-  Z.dx = Z.w/(NX-1);
-  Z.dy = Z.h/(NY-1);
+  // Move center of image to [0,0], expand by zoom, then move back to
+  // [x0,y0].  Assume that zoom < 1.
+  tx = Z.xc+Z.w*x0;  // Translate image center to origin
+  ty = Z.yc+Z.h*y0;
+  printf("Translate ymin to %e, ymax to %e\n", Z.ymin - ty, Z.ymax - ty);
+  Z.xmin = zoom*(Z.xmin - tx) + tx;  // Zoom and translate back.
+  Z.ymin = zoom*(Z.ymin - ty) + ty;  
+  Z.xmax = zoom*(Z.xmax - tx) + tx;
+  Z.ymax = zoom*(Z.ymax - ty) + ty;  
+  Z.xc = (Z.xmax+Z.xmin)/2.0;
+  Z.yc = (Z.ymax+Z.ymin)/2.0;  
+  Z.w = Z.xmax-Z.xmin;
+  Z.h = Z.ymax-Z.ymin;
+  Z.dx = (Z.xmax-Z.xmin)/(NX-1);
+  Z.dy = (Z.ymax-Z.ymin)/(NY-1);
+  printf("New xmin = %e, ymin = %e, xmax = %e, ymax = %e, w = %e, h = %e\n",
+	 Z.xmin, Z.ymin, Z.xmax, Z.ymax, Z.w, Z.h);
+  //printf("New dx = %e, dy = %e\n", Z.dx, Z.dy);
+  printf("New xc = %e, yc = %e\n", Z.xc, Z.yc);
   
   // Now that I have an updated Z, must update ImageData
-  rImageData->SetSpacing(Z.dx, Z.dy, 1.0);
-  rImageData->SetOrigin(Z.xmin, Z.ymin, 0.0);  // This sets lower left corner.
   rImageData->AllocateScalars(VTK_DOUBLE, 1);
   
-  // Get new origin, height and width as check
-  rImageData->GetOrigin(xyz);
-  myxmin = xyz[0];
-  myymin = xyz[1];
-  rImageData->GetSpacing(xyz);
-  myw = NX*xyz[0];
-  myh = NY*xyz[1];
-  printf("New xmin = %f, ymin = %f, w = %e, h = %e\n", myxmin, myymin, myw, myh);
-
-    // Now compute Mandelbrot set using new origin and spacing.
+  // Now compute Mandelbrot set using new origin and spacing.
   computeMandelbrot(rImageData);  // Compute the whole set.
-
-  /*
-  std::cout << "moveZoom, after update, rImageData = " << std::endl;
-  rImageData->PrintSelf(std::cout,vtkIndent(2));
-  std::cout << "moveZoom, after update, imageActor = " << std::endl;
-  imageActor->PrintSelf(std::cout,vtkIndent(2));
-  std::cout << "moveZoom, after update, renWin = " << std::endl;
-  renWin->PrintSelf(std::cout,vtkIndent(2));
-  std::cout << "----------------------------------------------" << std::endl;
-  */
 
   return;
 }
@@ -297,50 +281,75 @@ void moveTranslate(vtkVector<int, 4> p) {
   double xyz[3];
   double x1, y1, x2, y2;
   double myxmin, myymin, myh, myw;  // Locals used for checking only.
-  double deltax, deltay;
+  double dalphax, dalphay;
 
   // Location of middle button down
-  rImageData->TransformIndexToPhysicalPoint (p[0], p[1], iz, xyz);
+  MapIndexToPhysicalPoint (p[0], p[1], iz, xyz);  
   x1 = xyz[0];
   y1 = xyz[1];
-  printf("moveTranslate, x1 = %f, y1 = %f\n", x1, y1);
+  printf("moveTranslate, x1 = %e, y1 = %e\n", x1, y1);
 
   // Location of middle button up
-  rImageData->TransformIndexToPhysicalPoint (p[2], p[3], iz, xyz);
+  MapIndexToPhysicalPoint (p[2], p[3], iz, xyz);  
   x2 = xyz[0];
   y2 = xyz[1];
-  printf("moveTranslate, x2 = %f, y2 = %f\n", x2, y2);  
+  printf("moveTranslate, x2 = %e, y2 = %e\n", x2, y2);  
 
-  printf("Old xmin = %f, ymin = %f, w = %e, h = %e\n", Z.xmin, Z.ymin, Z.w, Z.h);
-
+  printf("Old xmin = %e, ymin = %e, xmax = %e, ymax = %e, w = %e, h = %e\n",
+	 Z.xmin, Z.ymin, Z.xmax, Z.ymax, Z.w, Z.h);
+  //printf("Old dx = %e, dy = %e\n", Z.dx, Z.dy);
+  printf("Old xc = %e, yc = %e\n", Z.xc, Z.yc);  
+  
   // Amount to translate.
-  deltax = x2-x1;
-  deltay = y2-y1;
+  dalphax = x2-x1;
+  dalphay = y2-y1;
 
   // New min (origin) and max
-  Z.xmin = Z.xmin - 1.3*deltax;
-  Z.xmax = Z.xmax - 1.3*deltax;  
-  Z.ymin = Z.ymin - 1.3*deltay;
-  Z.ymax = Z.ymax - 1.3*deltay;  
-  // printf("New origin = [Z.xmin, Z.ymin] = [%f, %f]\n", Z.xmin, Z.ymin); 
-  
-  // Move origin to new location
-  rImageData->SetOrigin(Z.xmin, Z.ymin, 0.0);  // This sets lower left corner.
+  Z.xmin = Z.xmin - dalphax*Z.w;
+  Z.xmax = Z.xmax - dalphax*Z.w;  
+  Z.ymin = Z.ymin - dalphay*Z.h;
+  Z.ymax = Z.ymax - dalphay*Z.h;  
+  Z.xc = (Z.xmax+Z.xmin)/2.0;
+  Z.yc = (Z.ymax+Z.ymin)/2.0;  
+  Z.w = Z.xmax-Z.xmin;
+  Z.h = Z.ymax-Z.ymin;
+  Z.dx = (Z.xmax-Z.xmin)/(NX-1);
+  Z.dy = (Z.ymax-Z.ymin)/(NY-1);
 
+  printf("New xmin = %e, ymin = %e, xmax = %e, ymax = %e, w = %e, h = %e\n",
+	 Z.xmin, Z.ymin, Z.xmax, Z.ymax, Z.w, Z.h);
+  //printf("New dx = %e, dy = %e\n", Z.dx, Z.dy);
+  printf("New xc = %e, yc = %e\n", Z.xc, Z.yc);  
+
+  // For some reason I need to do this in order to refresh drawing.
+  rImageData->AllocateScalars(VTK_DOUBLE, 1);
+  
   // Now compute Mandelbrot set using new origin
   computeMandelbrot(rImageData);  // Compute the whole set.
   
-  // Get new origin, height and width as check
-  rImageData->GetOrigin(xyz);
-  myxmin = xyz[0];
-  myymin = xyz[1];
-  rImageData->GetSpacing(xyz);
-  myw = NX*xyz[0];
-  myh = NY*xyz[1];
-  printf("New xmin = %f, ymin = %f, w = %e, h = %e\n", myxmin, myymin, myw, myh);
-  
   return;
 }
+
+
+void MapIndexToPhysicalPoint(int i, int j, int k, double xyz[3])
+{
+  // This replaces vtkImageData::TransformIndexToPhysicalPoint
+  // Z is the complex plane global.  NX, NY are size of view plane in pixels.
+  // The return elements are placed in xyz, the elements are doubles
+  // between 0 and 1.
+  double deltax, deltay;
+  double alphax, alphay;
+  double x, y, z;
+  
+  alphax = static_cast<double>(i)/static_cast<double>(NX);
+  alphay = static_cast<double>(j)/static_cast<double>(NY);  
+  z = 0.0;
+  
+  xyz[0] = alphax; // x;
+  xyz[1] = alphay; // y;
+  xyz[2] = z;
+}
+
 
 
 //======================================================================
@@ -353,10 +362,10 @@ int main(int argc, char* argv[])
   int c;
 
   // This is initial view window
-  x0 = 1.0;
+  x0 = -0.5;
   y0 = 0.0;
-  Z.w = 6.0;
-  Z.h = 6.0;
+  Z.w = 3.0;
+  Z.h = 3.0;
   Z.N = NITER;
   // Process command line args (if any)
   static struct option long_options[] =
@@ -404,7 +413,7 @@ int main(int argc, char* argv[])
       abort ();
     }
   }
-  printf("Starting x0 = %f, y0 = %f, w = %e, h = %e, N = %d\n", x0, y0, Z.w, Z.h, Z.N);  
+  printf("Starting x0 = %e, y0 = %e, w = %e, h = %e, N = %d\n", x0, y0, Z.w, Z.h, Z.N);  
 
   //---------------------------------------------------------
   // Finalize initialization of ComplexPlane Z -- create space to
@@ -417,18 +426,21 @@ int main(int argc, char* argv[])
   //--------------------------------------------------------------------
 
   // Map the scalar values in the image to colors with a lookup table
+  // Play with these settings to alter the color map.
   vtkSmartPointer<vtkLookupTable> lookupTable =
     vtkSmartPointer<vtkLookupTable>::New();
-  lookupTable->SetNumberOfTableValues(64);
+  lookupTable->SetNumberOfTableValues(512);
   // I use sqrt just to get interesting colors
-  lookupTable->SetTableRange(0, sqrt(Z.N-1));
+  lookupTable->SetTableRange(0, sqrt(Z.N-1));  
+  //lookupTable->SetTableRange(0, log(Z.N-1));  
   lookupTable->SetAboveRangeColor(0.0, 0.0, 0.0, 1.0);
   lookupTable->SetNanColor(0.0, 0.0, 0.0, 1.0);
   //lookupTable->SetRampToLinear();
   lookupTable->SetRampToSQRT();
   //lookupTable->SetRampToSCurve();
   //lookupTable->SetScaleToLog10();
-  lookupTable->SetScaleToLinear();  
+  lookupTable->SetScaleToLinear();
+  //lookupTable->SetScaleToSQRT();  
   lookupTable->Build();
 
   //----------------------------------------------------------------
@@ -439,6 +451,9 @@ int main(int argc, char* argv[])
   scalarBar->SetOrientationToVertical();
   scalarBar->GetLabelTextProperty()->SetColor(0,0,1);
   scalarBar->GetTitleTextProperty()->SetColor(0,0,1);
+  scalarBar->SetMaximumNumberOfColors(512);
+
+
   
   // Position scalarBar in window
   scalarBar->GetPositionCoordinate()->SetCoordinateSystemToNormalizedViewport();
@@ -455,30 +470,24 @@ int main(int argc, char* argv[])
   colorComplexPlane->PassAlphaToOutputOn();
   colorComplexPlane->SetInputData(rImageData);  // set to real or imag plane
 
-  // Configure ImageData
+  // Configure initial ImageData
   cout << "Configure colorComplexPlane ... " << endl;
   Z.xmin = x0 - Z.w/2.0;
   Z.xmax = x0 + Z.w/2.0;  
   Z.ymin = y0 - Z.h/2.0;
   Z.ymax = y0 + Z.h/2.0;  
+  Z.xc = (Z.xmax+Z.xmin)/2.0;
+  Z.yc = (Z.ymax+Z.ymin)/2.0;  
   Z.dx = (Z.xmax-Z.xmin)/(NX-1);
   Z.dy = (Z.ymax-Z.ymin)/(NY-1);
-  printf("xmin = %f, xmax = %f, ymin = %f, ymax = %f, dx = %f, dy = %f\n",
+  printf("xmin = %e, xmax = %e, ymin = %e, ymax = %e, dx = %e, dy = %e\n",
          Z.xmin, Z.xmax, Z.ymin, Z.ymax, Z.dx, Z.dy);
 
-
+  // rImageData is the data  plane for display.  It is the unit
+  // square
   rImageData->SetExtent( 0, NX-1, 0, NY-1, 0, 0 );  // Set image size in pixels
-  rImageData->SetSpacing(Z.dx, Z.dy, 1.0);
-  rImageData->SetOrigin(Z.xmin, Z.ymin, 0.0);   // This sets pos of left corner.
   rImageData->AllocateScalars(VTK_DOUBLE, 1); 
   
-  /*
-  iImageData->SetExtent( 0, NX-1, 0, NY-1, 0, 0 );  // Set image size in pixels
-  iImageData->SetSpacing(dx, dy, 1.0);
-  iImageData->SetOrigin(xmin, ymin, 0.0);   // This sets pos of left corner.
-  iImageData->AllocateScalars(VTK_DOUBLE, 1); 
-  */
-
   // Compute initial Mandelbrot for display
   cout << "Compute initial Mandelbrot ... " << endl;  
   computeMandelbrot(rImageData);  // Compute the whole set.
@@ -493,7 +502,12 @@ int main(int argc, char* argv[])
   renderer->AddActor(imageActor);
   renderer->AddActor(scalarBar);
   renderer->SetBackground(colors->GetColor3d("MidnightBlue").GetData());
-
+  camera->SetViewUp(0,1,0);
+  //camera->SetFocalPoint(0.0, 1.0, 0.0);
+  //camera->SetPosition(0,0,1);
+  renderer->SetActiveCamera(camera);
+  renderer->ResetCamera();
+  
   // Configure render window
   cout << "Configure render window ..." << endl;
   renWin->AddRenderer(renderer);
@@ -624,13 +638,17 @@ void f(double *z, double *lamr, double *lami, int N) {
   thrust::complex<double> mylam(lamr[LINDEX(NY, NX, j, i)],
 				lami[LINDEX(NY, NX, j, i)]);
   //printf("mylam = [%f, %f]\n", mylam.real(), mylam.imag());
-  
-  thrust::complex<double> x(0.5, 0.0);
+
+  // Modify this to choose between Mandelbrot and Logistic iteration.
+  //thrust::complex<double> x(0.5, 0.0);   // Logistic
+  thrust::complex<double> x(0.0, 0.0);  // Mandelbrot
 
   // Do iteration.  If x escapes, then  break.
   for (k=0; k<N; k++) {
-    x = mylam*x*(1.0-x);
-    if ((x.real()*x.real() + x.imag()*x.imag()) > 4.0) {
+    //x = mylam*x*(1.0-x);  // Logistic
+    x = x*x + mylam;    // Mandelbrot
+    //if ((x.real()*x.real() + x.imag()*x.imag()) > 4.0) {
+    if ((x.real()*x.real() + x.imag()*x.imag()) > 2.0) {
       break;
     }
   }
