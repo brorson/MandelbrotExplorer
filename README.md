@@ -32,8 +32,10 @@ images.  Some screenshots are below.
 --------------------------------------------------------------
 To run the explorer, just type "Mandelbrot" at the command line.  The
 middle mouse button pans the image and the mouse wheel will zoom in
-and out.  The other mouse buttons are disabled.  The
-following command line args are optional:
+and out.  The other mouse buttons are disabled.  To quit the program
+just hit the 'q' key.
+
+The following command line args are optional:
 
 -N Number of iterations to use.  Default is 8, but higher numbers (in
  the thousands) produce better Mandelbrot sets.
