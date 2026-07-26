@@ -1,5 +1,3 @@
-
-// Visualization Libraries
 #include <vtkNamedColors.h>
 #include <vtkNew.h>
 #include <vtkProperty.h>
@@ -16,25 +14,16 @@
 #include <vtkTextProperty.h>
 #include <vtkVector.h>
 #include <vtkCamera.h>
-#include <vtkImageResize.h>
-
-//Classic C++ Libraries
 #include <iostream>
-#include <cstring>
+
 #include <complex>
 #include <vector>
 #include <array>
-#include <cmath>
-
 // This is for complex numbers under CUDA:
 #include <thrust/complex.h>
 
 // #include <mpreal.h> 
 #include <getopt.h>
-
-//Kaan Volkan's MultiGPU struct header
-// The contents of this header file are a struct which hold information that the cpu must use to launch the GPUs
-#include "MultiGPU.h"
 
 // Helper macross
 #define MIN(a,b) ((a)<(b)?(a):(b))
@@ -46,27 +35,17 @@
 #define LINDEX(Nr, Nc, r, c)  ((c) + (r)*(Nc))
 
 // Display window dimensions
-#define DISPLAY_NX 800
-#define DISPLAY_NY 800
-// Computational dimentions these are double the display dimentions for cell avaraging to yield a better graph
-#define NX (2 * DISPLAY_NX)
-#define NY (2 * DISPLAY_NY)
-
-// Color Values
-#define NUM_COLORS 10000
-#define COLOR_RANGE_MAX 300
-
+#define NX 700
+#define NY 700
+#define NY0 350
 
 // Values used to distribute the jobs amongst the GPUs.
 #define NT NX*NY
 #define NTHD MIN(NT, 1024)
 #define NBLK ((NT-1)/NTHD + 1)
 
-//Maximum number of GPUs the user can specify
-#define MAX_GPUS 64
-
 // Default number of logistic map iterations.
-#define NITER 300
+#define NITER 8
 
 // Amount to grow/shrink when turning mouse wheel.
 #define SCALE 1.2
@@ -81,7 +60,6 @@
 // Global struct holding info about complex plane and iterations.
 typedef struct {
   int N;          // Number of logistic map iterations (settable).
-  int baseN;      // Number of logistic map iteration at the start after N is set.
   double w, h;    // Width, height of image in real numbers.
   double xmin, xmax, ymin, ymax;  // bounds of plane
   double dx, dy;  // Step sizes in plane
@@ -91,25 +69,18 @@ typedef struct {
 } ComplexPlane;
 ComplexPlane Z;
 
-TGPUplan plan[MAX_GPUS]; //TGPUplan is defined under the header file.
-int GPU_N ;
-int requestedGPUCount = 0;
-
-
 
 //-----------------------------------------------------------------
 // Declare fcns computing the Mandelbrot set in the complex plane.
 void computeMandelbrot(vtkUniformGrid *imageData);
 __global__
-void f(double *z, double *mag2_out, int local_N, int local_NX, int yOffset,double xmin,double ymin,double dx,double dy, int N);
+void f(double *z, double *lamr, double *lami, int N);
 
 // Declare host-side graphics manipulation fcns.
 void moveZoom(int i, int j, double zoom);
 void moveTranslate(vtkVector<int, 4> p);
 void MapIndexToPhysicalPoint(int i, int j, int k, double xyz[3]);
 void insertZIntoImageData(vtkUniformGrid *imageData, double *z);
-void initializeMultiGPU();
-void cleanupMultiGPU();
 
 
 //--------------------------------------------------------
@@ -139,7 +110,6 @@ MY_CREATE(vtkRenderer, renderer);
 MY_CREATE(vtkCamera, camera);
 MY_CREATE(vtkRenderWindow, renWin);
 MY_CREATE(vtkRenderWindowInteractor, iren);
-MY_CREATE(vtkImageResize, downsampleImage);
 
 
 //------------------------------------------------------------------
@@ -296,10 +266,9 @@ void moveZoom(int i, int j, double zoom) {
 	 Z.xmin, Z.ymin, Z.xmax, Z.ymax, Z.w, Z.h);
   //printf("New dx = %e, dy = %e\n", Z.dx, Z.dy);
   printf("New xc = %e, yc = %e\n", Z.xc, Z.yc);
-  // Increases the number of iterations as zoom is increased
-  Z.N = Z.baseN + static_cast<int>(100 * std::log(3/Z.w));
-  printf("New zoom number is %f\n", Z.w);
-  printf("New iteration number is %d\n", Z.N);
+  
+  // Now that I have an updated Z, must update ImageData
+  rImageData->AllocateScalars(VTK_DOUBLE, 1);
   
   // Now compute Mandelbrot set using new origin and spacing.
   computeMandelbrot(rImageData);  // Compute the whole set.
@@ -354,6 +323,9 @@ void moveTranslate(vtkVector<int, 4> p) {
   //printf("New dx = %e, dy = %e\n", Z.dx, Z.dy);
   printf("New xc = %e, yc = %e\n", Z.xc, Z.yc);  
 
+  // For some reason I need to do this in order to refresh drawing.
+  rImageData->AllocateScalars(VTK_DOUBLE, 1);
+  
   // Now compute Mandelbrot set using new origin
   computeMandelbrot(rImageData);  // Compute the whole set.
   
@@ -371,8 +343,8 @@ void MapIndexToPhysicalPoint(int i, int j, int k, double xyz[3])
   double alphax, alphay;
   double x, y, z;
   
-  alphax = static_cast<double>(i)/static_cast<double>(DISPLAY_NX);
-  alphay = static_cast<double>(j)/static_cast<double>(DISPLAY_NY);  
+  alphax = static_cast<double>(i)/static_cast<double>(NX);
+  alphay = static_cast<double>(j)/static_cast<double>(NY);  
   z = 0.0;
   
   xyz[0] = alphax; // x;
@@ -404,14 +376,13 @@ int main(int argc, char* argv[])
      {"y",  required_argument, 0, 'y'},
      {"w",  required_argument, 0, 'w'},
      {"h",  required_argument, 0, 'h'},
-     {"N",  required_argument, 0, 'N'},
-     {"gpus",  required_argument, 0, 'G'},       
+     {"N",  required_argument, 0, 'N'},       
      {0, 0, 0, 0}
     };
   /* getopt_long stores the option index here. */
   int option_index = 0;
   while (1) {
-    c = getopt_long (argc, argv, "x:y:w:h:N:G:", long_options, &option_index);
+    c = getopt_long (argc, argv, "x:y:w:h:N:", long_options, &option_index);
     //std::cout << "c = " << c << std::endl;
     if (c == -1) break;
     switch (c) {
@@ -435,25 +406,15 @@ int main(int argc, char* argv[])
       Z.N = atoi(optarg);
       //std::cout << "N = " << N << std::endl;            
       break;
-    case 'G':
-      requestedGPUCount = atoi(optarg);
-      if (requestedGPUCount < 0){
-        std::cout << "You can not request less then 0 GPUs\n";
-        return 1;
-      }
-      if (requestedGPUCount >= MAX_GPUS){
-        std::cout << "Requested GPU count is too many, max is set to 64\n";
-        return 1;
-      }
-
-      break;
-      fprintf (stderr,"Unknown option character 0x%x'.\n", optopt);
+    case '?':
+      fprintf (stderr,
+               "Unknown option character 0x%x'.\n",
+               optopt);
       return 1;
     default:
       abort ();
     }
   }
-  Z.baseN = Z.N;
   printf("Starting x0 = %e, y0 = %e, w = %e, h = %e, N = %d\n", x0, y0, Z.w, Z.h, Z.N);  
 
   //---------------------------------------------------------
@@ -467,47 +428,33 @@ int main(int argc, char* argv[])
   //--------------------------------------------------------------------
 
   // Map the scalar values in the image to colors with a lookup table
-  
-  
+  // Play with these settings to alter the color map.
   vtkSmartPointer<vtkLookupTable> lookupTable =
     vtkSmartPointer<vtkLookupTable>::New();
-
-  
-  lookupTable->SetNumberOfTableValues(NUM_COLORS);
-  lookupTable->SetTableRange(0.0, COLOR_RANGE_MAX);
+  lookupTable->SetNumberOfTableValues(512);
+  // I use sqrt just to get interesting colors
+  lookupTable->SetTableRange(0, sqrt(Z.N-1));  
+  //lookupTable->SetTableRange(0, log(Z.N-1));  
+  lookupTable->SetAboveRangeColor(0.0, 0.0, 0.0, 1.0);
+  lookupTable->SetNanColor(0.0, 0.0, 0.0, 1.0);
+  //lookupTable->SetRampToLinear();
+  lookupTable->SetRampToSQRT();
+  //lookupTable->SetRampToSCurve();
+  //lookupTable->SetScaleToLog10();
   lookupTable->SetScaleToLinear();
+  //lookupTable->SetScaleToSQRT();  
   lookupTable->Build();
 
-  for (int i = 0; i < NUM_COLORS; ++i) {
-
-    const double t = static_cast<double>(i) / static_cast<double>(NUM_COLORS - 1);
-
-    double r;
-    double g;
-    double b;
-
-    r = 0.5 + 0.5 * std::cos(2 * 3.14 * t);
-    g = 0.5 + 0.5 * std::cos(2 * 3.14 * t + 2.1);
-    b = 0.5 + 0.5 * std::cos(2 * 3.14 * t+ 4.2);
-
-
-    lookupTable->SetTableValue(i, r, g, b, 1.0);
-  }
-
-  lookupTable->SetBelowRangeColor(0.0, 0.0, 0.0, 1.0);
-  lookupTable->UseBelowRangeColorOn();
-  
   //----------------------------------------------------------------
-
   // Colorbar to show off color map
   vtkSmartPointer<vtkScalarBarActor> scalarBar =
     vtkSmartPointer<vtkScalarBarActor>::New();
   scalarBar->SetLookupTable( lookupTable );
   scalarBar->SetOrientationToVertical();
-  scalarBar->SetTitle("Color Cycle");
-  scalarBar->SetNumberOfLabels(0);
-  scalarBar->GetTitleTextProperty()->SetColor(0, 0, 1);
-  scalarBar->SetMaximumNumberOfColors(NUM_COLORS);
+  scalarBar->GetLabelTextProperty()->SetColor(0,0,1);
+  scalarBar->GetTitleTextProperty()->SetColor(0,0,1);
+  scalarBar->SetMaximumNumberOfColors(512);
+
 
   
   // Position scalarBar in window
@@ -517,7 +464,6 @@ int main(int argc, char* argv[])
   scalarBar->SetHeight(0.8);
 
 
-
   //--------------------------------------------------------
   // Pass the original image and the lookup table to a
   // filter to create a color image.
@@ -525,10 +471,6 @@ int main(int argc, char* argv[])
   colorComplexPlane->SetLookupTable(lookupTable);
   colorComplexPlane->PassAlphaToOutputOn();
   colorComplexPlane->SetInputData(rImageData);  // set to real or imag plane
-  downsampleImage->SetInputConnection(colorComplexPlane->GetOutputPort());
-  downsampleImage->SetResizeMethodToOutputDimensions();
-  downsampleImage->SetOutputDimensions(DISPLAY_NX,DISPLAY_NY,1);
-  downsampleImage->InterpolateOn();
 
   // Configure initial ImageData
   std::cout << "Configure colorComplexPlane ... " << endl;
@@ -550,14 +492,13 @@ int main(int argc, char* argv[])
   
   // Compute initial Mandelbrot for display
   std::cout << "Compute initial Mandelbrot ... " << endl;  
-  initializeMultiGPU();
   computeMandelbrot(rImageData);  // Compute the whole set.
   
   // Configure image actor.  Actor has built-in mapper.
   std::cout << "Configure image actor ... " << endl;    
   imageActor->InterpolateOff();
-  //imageActor->GetMapper()->SetInputConnection(colorComplexPlane->GetOutputPort());
-  imageActor->GetMapper()->SetInputConnection(downsampleImage->GetOutputPort());
+  imageActor->GetMapper()->SetInputConnection(colorComplexPlane->GetOutputPort());
+  
   // Configure renderer
   std::cout << "Configure renderer ..." << endl;
   renderer->AddActor(imageActor);
@@ -572,7 +513,7 @@ int main(int argc, char* argv[])
   // Configure render window
   std::cout << "Configure render window ..." << endl;
   renWin->AddRenderer(renderer);
-  renWin->SetSize(DISPLAY_NX, DISPLAY_NY); 
+  renWin->SetSize(NX, NY); // set window size in pixels
   renWin->SetWindowName("Mandelbrot set in complex plane");
             
   // Configure interactor and interactor style
@@ -606,120 +547,87 @@ int main(int argc, char* argv[])
 //====================================================================
 __host__
 void insertZIntoImageData(vtkUniformGrid *imageData, double *z) {
+  int ix, iy, iz;
+  double *pixel;
+
   // Insert returned z values into imageData
-  double *pixels = static_cast<double*>(imageData->GetScalarPointer(0, 0, 0));
-  std::memcpy(pixels,z,NX * NY * sizeof(double));
+  iz = 0;
+  for (ix = 0; ix < NX; ix++) {
+    for (iy = 0; iy < NY; iy++) {
+      pixel = static_cast<double*>(imageData->GetScalarPointer(ix, iy, iz));
+      // Take sqrt to get interesting colors.  No other reason.
+      *pixel = sqrt(z[LINDEX(NY, NX, iy, ix)]);
+      //printf("z[%d,%d] = %f\n", ix, iy, *pixel);
+    }
+  }
 }
 
 
 
 //=====================================================================
-
-__host__
-void initializeMultiGPU(){
-
-  //Check the available GPU count
-
-  int availableGPUCount = 0;
-  gpuErrchk(cudaGetDeviceCount(&availableGPUCount));
-
-  if (requestedGPUCount == 0) {
-    GPU_N = availableGPUCount;
-    std::cout << "We have" << GPU_N << " GPU devices and we are using all" << std::endl;
-  } else {
-    
-    GPU_N = requestedGPUCount;
-    std::cout << "We have" << availableGPUCount << " GPU devices and we are using"<< GPU_N<< std::endl;
-  }
-  if(requestedGPUCount > availableGPUCount){
-    std::cout<<"Requested more GPUs then available\n";
-    exit(EXIT_FAILURE);
-  }
-  int rowsPerGPU = NY / GPU_N;
-  int rowsRemainder = NY % GPU_N;
-  int currentYOffset = 0;
-
-  for (int g = 0; g < GPU_N; g++)
-  {
-    // HOST (CPU) side
-    plan[g].deviceID = g; //Device=0,1,2,3,...
-    plan[g].xOffset = 0;  //We are only dividing by rows so no need to offset in the colums
-    plan[g].yOffset = currentYOffset; // I will be incrementing this at the end of the loop
-
-    plan[g].global_NX = NX;   //Nothing suprising
-    plan[g].global_NY = NY;   //Nothing suprising
-    plan[g].local_NX = NX;    // I am dividing by rows so this stays the same
-    plan[g].local_NY = rowsPerGPU;
-    if (g == GPU_N - 1 ){
-      plan[g].local_NY += rowsRemainder;  // For the Last GPU, add the nbumber of leftover rows too. 
-    }
-    plan[g].local_N = plan[g].local_NY * plan[g].local_NX;
-    plan[g].local_Bytes = plan[g].local_N * sizeof(double);
-    currentYOffset += plan[g].local_NY;
-
-    // It is safer to first assign nullpointers to these in case a failure occurs later on.
-    plan[g].h_z    = nullptr;
-    plan[g].h_mag2    = nullptr;
-    gpuErrchk(cudaMallocHost((void**)&plan[g].h_z,    plan[g].local_Bytes));
-    gpuErrchk(cudaMallocHost((void**)&plan[g].h_mag2, plan[g].local_Bytes));
-    //Now lets fill the host memory we allocated
-
-    // GPU side 
-    //Now before allocating the memory on the GPU, lets select our device
-    gpuErrchk(cudaSetDevice(plan[g].deviceID));
-    gpuErrchk(cudaStreamCreate(&plan[g].stream));
-
-    // It is safer to first assign nullpointers to these in case a failure occurs later on.
-    plan[g].d_z    = nullptr;
-    plan[g].d_mag2 = nullptr;
-    //Now we can allocate the device memory via cudaMalloc
-    gpuErrchk(cudaMalloc((void**)&plan[g].d_z, plan[g].local_Bytes));
-    gpuErrchk(cudaMalloc((void**)&plan[g].d_mag2, plan[g].local_Bytes));
-
-  }
-
-
-
-}
 __host__
 void computeMandelbrot(vtkUniformGrid *imageData) {
   // This computes the Mandelbrot set using the current values of the
   // complex plane Z.  It then sticks the updated set into
   // imageData so it can be displayed.
-
+  int ix, iy;
+  double lamr[NX*NY];
+  double lami[NX*NY];
   
-  //Now lets launch each kernel 
-  for (int g = 0; g < GPU_N; g++) {
-    gpuErrchk(cudaSetDevice(plan[g].deviceID));
-    int threads = 256;
-    int blocks = (plan[g].local_N + threads - 1) / threads;
-    f<<<blocks,threads, 0, plan[g].stream>>>(plan[g].d_z,plan[g].d_mag2, plan[g].local_N, plan[g].local_NX, plan[g].yOffset, Z.xmin, Z.ymin, Z.dx, Z.dy, Z.N);
-    gpuErrchk(cudaMemcpyAsync(plan[g].h_z, plan[g].d_z, plan[g].local_Bytes, cudaMemcpyDeviceToHost, plan[g].stream));
-    gpuErrchk(cudaMemcpyAsync(plan[g].h_mag2, plan[g].d_mag2, plan[g].local_Bytes, cudaMemcpyDeviceToHost, plan[g].stream));
-  }
-  for(int g = 0; g < GPU_N; g++) {
-    gpuErrchk(cudaSetDevice(plan[g].deviceID));
-    gpuErrchk(cudaStreamSynchronize(plan[g].stream));
-  }
+  std::cout << "Use GPUs to compute Mandelbrot set...." << std::endl;
+  
+  //-------------------------------------------------------------------
+  // Now set up CUDA stuff
+  
 
-  for (int g = 0; g < GPU_N; g++) {
-    int zStartIndex = plan[g].yOffset * NX;
-    for (int i = 0; i < plan[g].local_N; i++) {
-      if ((int)plan[g].h_z[i] == Z.N) {
-        Z.z[zStartIndex + i] = -1.0;  // below-range black
-      } else {
-        //double smooth = plan[g].h_z[i] - log2(log2(plan[g].h_mag2[i])) + 4.0;
-        //Z.z[zStartIndex + i] = std::fmod(smooth, COLOR_RANGE_MAX);
-        //Maybe smoothing is not worth the effort
-        double normal = plan[g].h_z[i];
-        Z.z[zStartIndex + i] = std::fmod(normal, COLOR_RANGE_MAX);
-      }
+  //First attempt at assigning two GPUs
+  cudaSetDevice(0);
+  //I want half the NY so I wil create a new variable called NY0 which is NY/2
+  //int NY0 = NY/2 (I will define it at the start cuz this did not work)
+
+  // The value of lambda at each point in complex plane
+  double *dlamr;
+  gpuErrchk( cudaMalloc((void**)&dlamr, NX*NY*sizeof(double)) );  
+  double *dlami;
+  gpuErrchk( cudaMalloc((void**)&dlami, NX*NY*sizeof(double)) );
+  
+  // Make local lambda plane
+  for (ix = 0; ix < NX; ix++) {
+    for (iy = 0; iy < NY; iy++) {
+      lamr[LINDEX(NY, NX, iy, ix)] = Z.xmin + ix*Z.dx;
+      lami[LINDEX(NY, NX, iy, ix)] = Z.ymin + iy*Z.dy;
     }
   }
+  // Copy lambda plane values to device
+  gpuErrchk( cudaMemcpy(dlamr, lamr, NX*NY*sizeof(double),
+                        cudaMemcpyHostToDevice));
+  gpuErrchk( cudaMemcpy(dlami, lami, NX*NY*sizeof(double),
+                        cudaMemcpyHostToDevice));
+
   
+  // Malloc complex plane used to iterate the fcn on the device
+  // No need to copy anything here -- the plane's values will
+  // be generated on the device.
+  double *dz;
+  gpuErrchk( cudaMalloc((void**)&dz, NX*NY*sizeof(double)) );
+
+  // Call fcn running on GPUs to iterate map N times.
+  //printf("Calling f, [NBLK, NTHD] = [%d, %d], N = %d\n", NBLK, NTHD, Z.N);
+  f<<<NBLK,NTHD>>>(dz, dlamr, dlami, Z.N);
+  //gpuErrchk( cudaPeekAtLastError() );
+  //gpuErrchk( cudaDeviceSynchronize() );
+
+  // Copy dz back to host after iteration.
+  gpuErrchk( cudaMemcpy(Z.z, &(dz[0]), NX*NY*sizeof(double),
+                        cudaMemcpyDeviceToHost) );
+
   // Insert returned z values into imageData
   insertZIntoImageData(imageData, Z.z);
-  imageData->Modified();
+
+  //To free up the memory in the GPU device
+  gpuErrchk(cudaFree(dlamr));
+  gpuErrchk(cudaFree(dlami));
+  gpuErrchk(cudaFree(dz));
 
   std::cout << " ... done!\n" << std::endl;
   return;
@@ -728,55 +636,40 @@ void computeMandelbrot(vtkUniformGrid *imageData) {
 //---------------------------------------------------------------
 // This fcn iterates a point in the complex plane.
 __global__
-void f(double *z, double *mag2_out, int local_N, int local_NX, int yOffset, double xmin, double ymin, double dx, double dy, int N) {
+void f(double *z, double *lamr, double *lami, int N) {
 
-  // tid is the one dimentional indexing of the GPU 
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
-  //The if statement below workes as such,
-  // When Cuda launches its threads, they are launched in blocks,
-  //These blocks may not be multiples of our how many points on the graph we are computing,
-  // If we try to use these threads to do stuuff, they will cause problem, so this line just ends the function for those empty threads
-  if (tid >= local_N){
-    return;
-  }
-  // To get row column and inidices we do the following
-  int localColumn = tid % local_NX;
-  int localRow = tid / local_NX;
-
-  // To figure out which row of the entire picture our local rows correspond to, we use the y offset
-  int globalColumn = localColumn;
-  int globalRow = localRow + yOffset;
-
-
-  // Deciding the coordinates
-  double realPart = xmin + globalColumn * dx;
-  double imaginaryPart = ymin + globalRow * dy;
-
-
-  thrust::complex<double> mylam(realPart, imaginaryPart);
-
-  
-  //B is the break condition
-  const double B = 256.0;
+  int ltid = threadIdx.x;   // my local index on this block.
+  int bid = blockIdx.x;
+  int i,j;
   int k;
   
+  // Figure out which lambda value to use based on my
+  // block and thread index values.
+  i = (int) tid/NX;
+  j = (int) tid%NX;
+  //printf("Entered f, N = %d, [i,j] = [%d, %d]\n", N, i, j);
+  thrust::complex<double> mylam(lamr[LINDEX(NY, NX, j, i)],
+				lami[LINDEX(NY, NX, j, i)]);
+  //printf("mylam = [%f, %f]\n", mylam.real(), mylam.imag());
+
   // Modify this to choose between Mandelbrot and Logistic iteration.
   //thrust::complex<double> x(0.5, 0.0);   // Logistic
   thrust::complex<double> x(0.0, 0.0);  // Mandelbrot
+
   // Do iteration.  If x escapes, then  break.
-  double mag2 = 0.0;
   for (k=0; k<N; k++) {
     //x = mylam*x*(1.0-x);  // Logistic
     x = x*x + mylam;    // Mandelbrot
-    mag2 = x.real()*x.real()+x.imag()*x.imag();
     //if ((x.real()*x.real() + x.imag()*x.imag()) > 4.0) {
-    //if ((x.real()*x.real() + x.imag()*x.imag()) > 2) {
-    if ((mag2) > B*B) {
+    if ((x.real()*x.real() + x.imag()*x.imag()) > 2.0) {
       break;
     }
   }
-  z[tid] = (double) k;
-  mag2_out[tid] =  mag2;
+
+  // Put count to escape into z.
+  z[LINDEX(NY, NX, j, i)] = (double) k;
 
 }
+
 
