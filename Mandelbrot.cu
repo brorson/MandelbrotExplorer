@@ -39,6 +39,7 @@
 // Helper macross
 #define MIN(a,b) ((a)<(b)?(a):(b))
 #define MAX(a,b) ((a)>(b)?(a):(b))
+#define FIRST_USABLE_GPU 0
 
 // Macro returning the linear index into matrix of
 // dimensions Nc (cols), Nr (rows).  The linear index
@@ -51,6 +52,7 @@
 // Computational dimentions these are double the display dimentions for cell avaraging to yield a better graph
 #define NX (2 * DISPLAY_NX)
 #define NY (2 * DISPLAY_NY)
+#define ITERATION_SCALAR 200
 
 // Color Values
 #define NUM_COLORS 10000
@@ -297,7 +299,7 @@ void moveZoom(int i, int j, double zoom) {
   //printf("New dx = %e, dy = %e\n", Z.dx, Z.dy);
   printf("New xc = %e, yc = %e\n", Z.xc, Z.yc);
   // Increases the number of iterations as zoom is increased
-  Z.N = Z.baseN + static_cast<int>(100 * std::log(3/Z.w));
+  Z.N = Z.baseN + static_cast<int>(ITERATION_SCALAR * std::log(3/Z.w));
   printf("New zoom number is %f\n", Z.w);
   printf("New iteration number is %d\n", Z.N);
   
@@ -624,7 +626,7 @@ void initializeMultiGPU(){
   gpuErrchk(cudaGetDeviceCount(&availableGPUCount));
 
   if (requestedGPUCount == 0) {
-    GPU_N = availableGPUCount;
+    GPU_N = availableGPUCount - FIRST_USABLE_GPU;
     std::cout << "We have" << GPU_N << " GPU devices and we are using all" << std::endl;
   } else {
     
@@ -642,7 +644,7 @@ void initializeMultiGPU(){
   for (int g = 0; g < GPU_N; g++)
   {
     // HOST (CPU) side
-    plan[g].deviceID = g; //Device=0,1,2,3,...
+    plan[g].deviceID = FIRST_USABLE_GPU + g; //Device=0,1,2,3,...
     plan[g].xOffset = 0;  //We are only dividing by rows so no need to offset in the colums
     plan[g].yOffset = currentYOffset; // I will be incrementing this at the end of the loop
 
