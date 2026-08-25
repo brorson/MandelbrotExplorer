@@ -2,6 +2,7 @@ This is a Mandelbrot set explorer written in CUDA and using VTK for
 graphics and mouse interactions.  The code is targeted to run on my
 "personal supercomputer", which is a Dell Precision 7810 tower with an
 Nvidia Tesla K80 GPGPU as the compute engine.
+[Example](https://www.electroniscript.com)
 
 This Mandelbrot explorer iterates the logistic map,
 
